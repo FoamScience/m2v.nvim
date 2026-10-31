@@ -1,32 +1,35 @@
-# m2v
+# m2v.nvim
 
-> This has originally evolved from trying to use [](sgrep) as a "search by meaning tool".
-> Which worked fine until I needed the "library part" to couple with other (MCP, LSP, ... etc) tools.
+Semantic code search for Neovim, built on [model2vec](https://github.com/MinishLab/model2vec) static embeddings. Runs entirely inside the editor through LuaJIT FFI, treesitter and the utf8proc bundled with nvim. No Python, no server.
 
-Semantic code search on [model2vec](https://github.com/MinishLab/model2vec) static embeddings, running entirely inside Neovim (LuaJIT FFI, treesitter, utf8proc bundled with nvim). No Python.
+Queries are matched by meaning and fused with `rg` lexical matches, so "code indexing as vectors" finds `index.lua` even when none of those words appear in it.
 
-- `lua/m2v/tokenizer.lua`: BERT WordPiece (BertNormalizer + BertPreTokenizer) for the potion-base/code models; Unigram (sentencepiece precompiled charsmap + Metaspace + Viterbi) for potion-multilingual
-- `lua/m2v/model.lua`: safetensors loader (mmap, F16/F32), mean pooling with model2vec token mapping/weights when present, L2 normalization
-- `lua/m2v/chunk.lua`: treesitter chunking (top-level nodes, split when too big, small neighbours merged), line windows as fallback
-- `lua/m2v/index.lua`, `indexer.lua`: per-root index built by a background `nvim -l`, incremental by mtime/size; files to embed are sharded across `opts.workers` child processes and merged back into one index
-- `lua/m2v/init.lua`: model lookup/download, search = brute-force cosine fused with `rg` matches (reciprocal rank fusion)
-- `lua/m2v/picker.lua`: [snacks.nvim](https://github.com/folke/snacks.nvim) pickers
-- `lua/m2v/health.lua`: `:checkhealth m2v`
+![Live search for "treesitter symbol handling"](assets/live-treesitter.png)
+![Live search for "code indexing as vectors"](assets/live-indexing.png)
+
+## Features
+
+- Pure Lua model2vec inference: WordPiece and Unigram tokenizers, mmap'd safetensors (F16/F32)
+- Treesitter-aware chunking, with line windows as fallback
+- Background, incremental indexing per project root, parallelised across worker processes
+- Hybrid ranking: cosine similarity fused with `rg` matches (reciprocal rank fusion)
+- ~30 ms queries on a 10k-chunk index
+- [snacks.nvim](https://github.com/folke/snacks.nvim) pickers, plain Lua API, `:checkhealth m2v`
 
 ## Requirements
 
-- Neovim built with LuaJIT (utf8proc is reached through FFI from the nvim binary); tested on 0.12.6
-- `rg` (file listing and lexical ranking; `git ls-files` is the listing fallback)
+- Neovim built with LuaJIT (tested on 0.12.6)
+- `rg` for file listing and lexical ranking (`git ls-files` is the listing fallback)
 - `curl` for the one-time model download
-- snacks.nvim for the pickers only
+- snacks.nvim, only for the pickers
 
 ## Install
 
-lazy.nvim:
+[lazy.nvim](https://github.com/folke/lazy.nvim):
 
 ```lua
 {
-    "<owner>/m2v.nvim",
+    "FoamScience/m2v.nvim",
     main = "m2v",
     opts = {},
     keys = {
@@ -36,7 +39,7 @@ lazy.nvim:
 }
 ```
 
-Only directories with a root marker (`.git` by default) are indexed. Indexes live in `stdpath("cache")/m2v/index/` and are rebuilt incrementally in the background on first search and after writes.
+Only directories with a root marker (`.git` by default) are indexed. Indexes live in `stdpath("cache")/m2v/index/`, are built in the background on first search and refreshed after writes. The live picker starts searching once the query has 3 words (`picker.min_live_words`).
 
 ## Configuration
 
@@ -53,7 +56,7 @@ opts = {
     depth = 100, -- candidates taken from each ranking before fusion
     lexical = { max_terms = 16, min_len = 3, max_count = 20 },
     rebuild_delay_ms = 2000,
-    workers = math.min(4, #vim.uv.cpu_info()), -- indexer processes for a full index; 1 = embed in the single indexer process
+    workers = math.min(4, #vim.uv.cpu_info()), -- indexer processes for a full index; 1 = single process
     picker = {
         n = 30,
         min_live_words = 3,
@@ -62,7 +65,9 @@ opts = {
 }
 ```
 
-Indexing with `workers > 1` starts the indexer as a coordinator that lists files, reuses unchanged chunks from the previous index, shards the remaining files by size across up to `workers` child `nvim -l` processes (each loading the model, about 300 MB peak RSS for potion-code-16M-v2), and merges their output in file order. Fewer than 32 changed files per worker reduce the worker count, so an incremental rebuild after a few saves still embeds in the coordinator itself. The resulting `vectors.bin` is byte-identical for any worker count.
+### Parallel indexing
+
+With `workers > 1` the indexer runs as a coordinator: it lists files, reuses unchanged chunks from the previous index, shards the rest by size across up to `workers` child `nvim -l` processes, and merges their output in file order. Each worker loads the model (about 300 MB peak RSS for potion-code-16M-v2). Fewer than 32 changed files per worker reduces the worker count, so a rebuild after a few saves embeds in the coordinator alone. `vectors.bin` is byte-identical for any worker count.
 
 ## API
 
@@ -78,46 +83,40 @@ local job = m2v.search(root, "parse json responses", 10, function(hits) end)
 
 Set `opts.model`. Models are taken from `~/.cache/huggingface/hub` when present, otherwise downloaded to `stdpath("cache")/m2v/models/`. Each model gets its own index.
 
-Supported: WordPiece and Unigram (Metaspace, `split = false`) tokenizers; `embeddings` tensor (F16 or F32), optionally with the `mapping` (I64) and `weights` (F64) tensors that model2vec vocabulary quantization adds (row = `embeddings[mapping[id]] * weights[id]`, then mean).
+Supported: WordPiece and Unigram (Metaspace, `split = false`) tokenizers; an `embeddings` tensor (F16 or F32), optionally with the `mapping` (I64) and `weights` (F64) tensors added by model2vec vocabulary quantization.
 
-| model | dim | tokenizer | tensors | status |
-|---|---|---|---|---|
-| potion-base-2M | 64 | WordPiece | `embeddings` F32 | works |
-| potion-base-4M | 128 | WordPiece | `embeddings` F32 | works |
-| potion-base-8M | 256 | WordPiece | `embeddings` F32 | works |
-| potion-base-32M | 512 | WordPiece | `embeddings` F32 | works |
-| potion-retrieval-32M | 512 | WordPiece | `embeddings` F32 | works |
-| potion-code-16M-v2 (default) | 256 | WordPiece | `embeddings` F16 | works |
-| potion-code-16M | 256 | WordPiece | `embeddings` F32 + `mapping` I64 + `weights` F64 | works |
-| potion-multilingual-128M | 256 | Unigram | `embeddings` F32 (500353 × 256, 512 MB) | works |
+| model | dim | tokenizer | tensors |
+|---|---|---|---|
+| potion-base-2M | 64 | WordPiece | `embeddings` F32 |
+| potion-base-4M | 128 | WordPiece | `embeddings` F32 |
+| potion-base-8M | 256 | WordPiece | `embeddings` F32 |
+| potion-base-32M | 512 | WordPiece | `embeddings` F32 |
+| potion-retrieval-32M | 512 | WordPiece | `embeddings` F32 |
+| **potion-code-16M-v2** (default) | 256 | WordPiece | `embeddings` F16 |
+| potion-code-16M | 256 | WordPiece | `embeddings` F32 + `mapping` I64 + `weights` F64 |
+| potion-multilingual-128M | 256 | Unigram | `embeddings` F32 (500353 × 256, 512 MB) |
+
+All listed models are tested and work.
+
+## Layout
+
+| file | role |
+|---|---|
+| `lua/m2v/tokenizer.lua` | BERT WordPiece (BertNormalizer + BertPreTokenizer); Unigram (sentencepiece precompiled charsmap + Metaspace + Viterbi) |
+| `lua/m2v/model.lua` | safetensors loader (mmap), mean pooling with model2vec mapping/weights, L2 normalization |
+| `lua/m2v/chunk.lua` | treesitter chunking: top-level nodes, split when too big, small neighbours merged |
+| `lua/m2v/index.lua`, `indexer.lua` | per-root index built by a background `nvim -l`, incremental by mtime/size, sharded across workers |
+| `lua/m2v/init.lua` | model lookup/download; brute-force cosine search fused with `rg` |
+| `lua/m2v/picker.lua` | snacks.nvim pickers |
+| `lua/m2v/health.lua` | `:checkhealth m2v` |
 
 ## Benchmarks
 
-Machine: Intel i5-11600KF (12 threads), 45 GB RAM, NVIM v0.12.6 (LuaJIT 2.1). Everything below was measured 2026-10-30 on the current code, from headless `nvim -l` scripts with all models already on disk. Corpus: mini.nvim @ a03ad89, 3106 files (`rg --files`), 10416 chunks.
+Intel i5-11600KF (12 threads), 45 GB RAM, NVIM v0.12.6 (LuaJIT 2.1), measured 2026-10-30 from headless `nvim -l` with models on disk. Corpus: mini.nvim @ a03ad89, 3106 files, 10416 chunks.
 
-### Correctness
+### End to end
 
-Token ids against HF `tokenizers` 0.23.3, `[UNK]` dropped as model2vec does:
-
-- WordPiece (`potion-code-16M-v2`), 6 sample lines (Lua, Python with accented words, C++, SQL, odd whitespace, prose): identical.
-- Unigram (`potion-multilingual-128M`), 21 samples (German, Russian, Japanese, Arabic, Greek, Hindi, Vietnamese, emoji with ZWJ and skin tones, combining marks, NFKC cases like `ﬁ ① ™ ½`, odd whitespace, literal `[UNK]`): identical. On 3077 lines sampled from mini.nvim, 47 lines differ only in the order of equal-score segmentations of runs like `────` or `8888`; the token multisets, and so the embeddings, are identical. HF runs Viterbi over the whole sentence, m2v per `▁word` with a memo, so float rounding breaks ties differently.
-
-Embeddings against `model2vec.StaticModel.encode` 0.10.0 (cosine between normalized vectors):
-
-| model | samples | min cos | max cos |
-|---|---|---|---|
-| potion-base-2M | 6 lines | 1.000000 | 1.000000 |
-| potion-base-4M | 6 lines | 1.000000 | 1.000000 |
-| potion-base-8M | 6 lines | 1.000000 | 1.000000 |
-| potion-base-32M | 6 lines | 1.000000 | 1.000000 |
-| potion-retrieval-32M | 6 lines | 1.000000 | 1.000000 |
-| potion-code-16M-v2 | 6 lines | 0.999952 | 1.000001 (F16 rounding) |
-| potion-code-16M | 6 lines | 1.000000 | 1.000000 (0.797329 min before `mapping`/`weights` were applied) |
-| potion-multilingual-128M | 19 multilingual samples + 400 mini.nvim lines | 1.000000 | 1.000000 |
-
-### End to end per model
-
-Fresh index each run with the default `workers = 4`. "Ready" = first `search()` call until the index exists. Query times are full `search()` calls (rg + semantic + fusion) on the loaded index; q1 includes loading the model into the editor.
+Fresh index, `workers = 4`. "Ready" is first `search()` until the index exists (±0.5 s between runs). Queries are full `search()` calls (rg + semantic + fusion); q1 includes loading the model.
 
 | model | ready | vectors.bin | q1 | q2 | q3 |
 |---|---|---|---|---|---|
@@ -126,35 +125,34 @@ Fresh index each run with the default `workers = 4`. "Ready" = first `search()` 
 | potion-base-8M | 2.0 s | 10.7 MB | 31 ms | 28 ms | 31 ms |
 | potion-base-32M | 1.3 s | 21.3 MB | 41 ms | 30 ms | 24 ms |
 | potion-retrieval-32M | 1.5 s | 21.3 MB | 41 ms | 29 ms | 23 ms |
-| potion-code-16M-v2 (default) | 1.1 s | 10.7 MB | 38 ms | 28 ms | 31 ms |
+| **potion-code-16M-v2** | 1.1 s | 10.7 MB | 38 ms | 28 ms | 31 ms |
 | potion-code-16M | 1.1 s | 10.7 MB | 37 ms | 29 ms | 29 ms |
 | potion-multilingual-128M | 2.1 s | 10.7 MB | 331 ms | 32 ms | 25 ms |
 
-q1 = "highlight word under cursor", q2 = "parse git diff hunks", q3 = "fuzzy match score". "Ready" varies by ±0.5 s between runs; the differences between the WordPiece models are noise.
+q1 = "highlight word under cursor", q2 = "parse git diff hunks", q3 = "fuzzy match score". Every WordPiece model returned the same top-3 files (`cursorword`, `diff`, `fuzzy` sources, docs and tests). potion-multilingual-128M differs on q2. On this corpus the rg side of the fusion carries a lot of weight, so these queries separate models little.
 
-Top 3 hits were the same files for every WordPiece model: `lua/mini/cursorword.lua` + `doc/mini-cursorword.txt` for q1, `lua/mini/diff.lua` + `doc/mini-diff.txt` + `readmes/mini-diff.md` for q2, `lua/mini/fuzzy.lua` + `doc/mini-fuzzy.txt` + `tests/test_fuzzy.lua` for q3. potion-multilingual-128M differs on q2 (`tests/test_misc.lua`, `tests/dir-git/help-output`, `tests/test_extra.lua`). On this corpus the rg side of the fusion contributes a lot, so these queries separate models little.
+### vs [sgrep](https://github.com/context-dot-dev/sgrep) 0.3.0
 
-### Against [sgrep](https://github.com/context-dot-dev/sgrep) 0.3.0
-
-Same corpus and queries, top 5, potion-code-16M-v2, both timed from the shell.
+Same corpus and queries, top 5, potion-code-16M-v2, timed from the shell.
 
 | | sgrep | m2v |
 |---|---|---|
-| full index | 1.0 s (`--refresh-cache`, 12 threads), 571 MB peak RSS | 1.2 s (`workers = 4`), 459 MB summed peak RSS; 3.6 s single process, 233 MB |
+| full index | 1.0 s (12 threads), 571 MB peak RSS | 1.2 s (`workers = 4`), 459 MB summed; 3.6 s / 233 MB single process |
 | query, cached index | 70-80 ms (CLI start + model load + search) | 20-40 ms inside the editor |
 
-Hits overlapped heavily: both found `cursorword.lua`/`mini-cursorword.txt`, `diff.lua`/`mini-diff.txt`/`mini-diff.md`, `fuzzy.lua`/`mini-fuzzy.txt`/`test_fuzzy.lua`. sgrep ranks `lua/mini/git.lua` first for q2.
+Results overlap heavily; sgrep ranks `lua/mini/git.lua` first for q2.
 
-### Parallel indexing
+<details>
+<summary>Parallel indexing</summary>
 
-Full index, `nvim -l indexer.lua` timed from the shell, summed RSS of the process tree sampled every 50 ms. `workers = 1` is the single-process path. `model.safetensors` is mmap'd read-only, so the processes share the page cache for the model and the summed RSS counts those shared pages once per process.
+Full index via `nvim -l indexer.lua`, summed RSS of the process tree sampled every 50 ms. The model is mmap'd read-only, so shared page-cache pages are counted once per process.
 
 | model, workers | full index | peak RSS (all processes) |
 |---|---|---|
 | potion-code-16M-v2, 1 | 3.6 s | 233 MB |
 | potion-code-16M-v2, 2 | 2.1 s | 326 MB |
 | potion-code-16M-v2, 3 | 1.4 s | 394 MB |
-| potion-code-16M-v2, 4 (default on >= 4 cores) | 1.2 s | 459 MB |
+| potion-code-16M-v2, 4 (default) | 1.2 s | 459 MB |
 | potion-code-16M-v2, 6 | 1.2 s | 490 MB |
 | potion-code-16M-v2, 8 | 0.9 s | 651 MB |
 | potion-code-16M-v2, 12 | 1.0 s | 783 MB |
@@ -162,19 +160,40 @@ Full index, `nvim -l indexer.lua` timed from the shell, summed RSS of the proces
 | potion-multilingual-128M, 2 | 3.4 s | 1501 MB |
 | potion-multilingual-128M, 4 | 2.4 s | 2761 MB |
 
-Incremental rebuilds with `workers = 4`: nothing changed 0.1 s / 78 MB; 1 file changed 0.2 s / 80 MB (embedded in the coordinator); 50 files changed 0.6 s / 277 MB (2 workers).
+Incremental rebuilds, `workers = 4`: nothing changed 0.1 s / 78 MB; 1 file 0.2 s / 80 MB; 50 files 0.6 s / 277 MB (2 workers).
 
-### Components
+</details>
+
+<details>
+<summary>Components</summary>
 
 | measurement | result |
 |---|---|
-| model load, mmap + tokenizer.json (potion-code-16M-v2, 32 MB F16) | 12 ms |
-| model load (potion-multilingual-128M, 500k-piece Unigram vocab + mmap of 512 MB F32) | 297 ms |
-| 500 embeds of a ~400-token chunk | 70 ms (potion-code-16M-v2), 104 ms (potion-base-32M), 135 ms (potion-multilingual-128M) |
+| model load, potion-code-16M-v2 (32 MB F16) | 12 ms |
+| model load, potion-multilingual-128M (500k-piece vocab, 512 MB F32) | 297 ms |
+| 500 embeds of a ~400-token chunk | 70 ms (code-16M-v2), 104 ms (base-32M), 135 ms (multilingual-128M) |
 | brute-force cosine scan, 10419 × 256 | 5.4 ms |
-| tokenizer throughput, mini.nvim line by line (11.3 MB) | WordPiece 2.05 s (5.5 MB/s), Unigram 4.22 s (2.7 MB/s) |
-| indexing profile, mini.nvim, single process before optimizations | tokenize 7.1 s, filetype detection 2.7 s, chunking 2.6 s, read 0.5 s, embedding sum 0.6 s |
+| tokenizer throughput, mini.nvim line by line (11.3 MB) | WordPiece 5.5 MB/s, Unigram 2.7 MB/s |
 | full index, nvim config (96 files, 448 chunks) | 1.3 s |
 | incremental re-index, nothing changed (96 files) | 0.26 s |
 
-History of the single-process mini.nvim index: 25 s originally; 7.1 s after a per-word WordPiece memo, capping the WordPiece search at the longest vocab entry, one `%p` gsub instead of per-word punctuation matching, and content-based filetype detection only for `#!` files (measured inside the editor); 3.6 s today from the shell. Reading the 512 MB multilingual model into a Lua string instead of mmap cost 1030 MB RSS per process and 1526 MB / 4115 MB peak for a 1- / 4-worker index.
+</details>
+
+<details>
+<summary>Correctness</summary>
+
+Token ids match HF `tokenizers` 0.23.3 (`[UNK]` dropped, as model2vec does):
+
+- WordPiece (potion-code-16M-v2): 6 samples covering Lua, Python with accents, C++, SQL, odd whitespace and prose. Identical.
+- Unigram (potion-multilingual-128M): 21 samples covering German, Russian, Japanese, Arabic, Greek, Hindi, Vietnamese, ZWJ emoji, combining marks, NFKC cases (`ﬁ ① ™ ½`), odd whitespace and literal `[UNK]`. Identical. Over 3077 mini.nvim lines, 47 differ only in the order of equal-score segmentations (runs like `────`, `8888`); token multisets, and so embeddings, are identical. HF runs Viterbi over the whole sentence, m2v per `▁word`, so float rounding breaks ties differently.
+
+Embeddings vs `model2vec.StaticModel.encode` 0.10.0, cosine between normalized vectors:
+
+| model | samples | min cos | max cos |
+|---|---|---|---|
+| potion-base-2M / 4M / 8M / 32M, potion-retrieval-32M | 6 lines | 1.000000 | 1.000000 |
+| potion-code-16M-v2 | 6 lines | 0.999952 | 1.000001 (F16 rounding) |
+| potion-code-16M | 6 lines | 1.000000 | 1.000000 |
+| potion-multilingual-128M | 19 multilingual + 400 mini.nvim lines | 1.000000 | 1.000000 |
+
+</details>
