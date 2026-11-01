@@ -14,14 +14,14 @@ Queries are matched by meaning and fused with `rg` lexical matches, so "code ind
 - Background, incremental indexing per project root, parallelised across worker processes
 - Hybrid ranking: cosine similarity fused with `rg` matches (reciprocal rank fusion)
 - ~30 ms queries on a 10k-chunk index
-- [snacks.nvim](https://github.com/folke/snacks.nvim) pickers, plain Lua API, `:checkhealth m2v`
+- [snacks.nvim](https://github.com/folke/snacks.nvim) pickers or the quickfix list, plain Lua API, `:checkhealth m2v`
 
 ## Requirements
 
 - Neovim built with LuaJIT (tested on 0.12.6)
 - `rg` for file listing and lexical ranking (`git ls-files` is the listing fallback)
 - `curl` for the one-time model download
-- snacks.nvim, only for the pickers
+- snacks.nvim for the pickers (optional: without it results go to the quickfix list)
 
 ## Install
 
@@ -72,6 +72,7 @@ opts = {
     workers = math.min(4, #vim.uv.cpu_info()), -- indexer processes for a full index; 1 = single process
     picker = {
         n = 30,
+        ui = "auto", -- "auto": snacks.nvim when installed; "quickfix": always the quickfix list
         roots = {}, -- other project roots searched alongside the current one, e.g. { "~/.config/nvim" }
         min_live_words = 3,
         test_patterns = { ... }, -- hidden unless the query mentions test or spec
@@ -130,7 +131,7 @@ All listed models are tested and work.
 | `lua/m2v/chunk.lua` | treesitter chunking: top-level nodes, split when too big, small neighbours merged |
 | `lua/m2v/index.lua`, `indexer.lua` | per-root index built by a background `nvim -l`, incremental by mtime/size, sharded across workers |
 | `lua/m2v/init.lua` | model lookup/download; brute-force cosine search fused with `rg` |
-| `lua/m2v/picker.lua` | snacks.nvim pickers |
+| `lua/m2v/picker.lua` | snacks.nvim pickers, quickfix fallback (`live()` then prompts for one query) |
 | `lua/m2v/health.lua` | `:checkhealth m2v` |
 
 ## Benchmarks

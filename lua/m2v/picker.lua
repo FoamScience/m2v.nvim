@@ -1,8 +1,10 @@
--- snacks.nvim pickers over m2v.search
+-- snacks.nvim pickers over m2v.search, quickfix list without snacks
 local M = {}
 
 M.config = {
     n = 30,
+    -- "auto" uses snacks.nvim when installed, "quickfix" always fills the quickfix list
+    ui = "auto",
     -- other project roots searched alongside the current one
     roots = {},
     -- live picker waits for this many words before searching
@@ -59,17 +61,37 @@ local function to_items(hits, query, cwd)
     for _, hit in ipairs(hits) do
         local rel = vim.fs.relpath(cwd, hit.path) or vim.fn.fnamemodify(hit.path, ":~")
         if keep_tests or not is_test(rel) then
-            local line = vim.fn.readfile(hit.path, "", hit.start)[hit.start] or ""
+            local line = vim.trim(vim.fn.readfile(hit.path, "", hit.start)[hit.start] or "")
             table.insert(items, {
                 file = hit.path,
                 pos = { hit.start, 0 },
                 end_pos = { hit["end"], 0 },
                 comment = hit.similarity and (" %.2f"):format(hit.similarity),
-                text = rel .. " " .. vim.trim(line),
+                text = rel .. " " .. line,
+                snippet = line,
             })
         end
     end
     return items
+end
+
+local function snacks()
+    return M.config.ui ~= "quickfix" and pcall(require, "snacks")
+end
+
+local function quickfix(title, items)
+    vim.fn.setqflist({}, " ", {
+        title = title,
+        items = vim.tbl_map(function(item)
+            return {
+                filename = item.file,
+                lnum = item.pos[1],
+                end_lnum = item.end_pos[1],
+                text = (item.comment and vim.trim(item.comment) .. " " or "") .. item.snippet,
+            }
+        end, items),
+    })
+    vim.cmd.copen()
 end
 
 -- path:GLOB and -path:GLOB tokens scope the search, -lex skips ripgrep
@@ -98,11 +120,20 @@ function M.search(input, opts)
     end
     local query, filter = parse(input, opts)
     require("m2v").search(r, query, M.config.n, function(hits)
-        require("snacks").picker({ title = "m2v: " .. input, items = to_items(hits, query, cwd), format = "file" })
+        local title, items = "m2v: " .. input, to_items(hits, query, cwd)
+        if snacks() then
+            require("snacks").picker({ title = title, items = items, format = "file" })
+        else
+            quickfix(title, items)
+        end
     end, filter)
 end
 
+-- falls back to search_prompt without snacks
 function M.live(opts)
+    if not snacks() then
+        return M.search_prompt(opts)
+    end
     require("snacks").picker({
         title = "m2v (live)",
         live = true,
