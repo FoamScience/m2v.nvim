@@ -489,6 +489,65 @@ function M.search(root, query, n, cb, opts)
     }
 end
 
+-- 1-based inclusive lines of the indexed chunk holding the 1-based row of path, if any
+function M.chunk_at(root, path, row)
+    local idx = state_of(root).idx
+    local rel = idx and vim.fs.relpath(root, path)
+    if not rel then
+        return
+    end
+    local first, count = index.file_chunks(idx, rel)
+    for c = first, first + count - 1 do
+        local _, s, e = index.chunk(idx, c)
+        if s + 1 <= row and row <= e + 1 then
+            return s + 1, e + 1
+        end
+    end
+end
+
+-- Chunks most similar to text, semantic ranking only. root and opts.paths as for search;
+-- opts.skip = { path, start, end } drops hits overlapping that range (the text's own chunk).
+-- cb gets hits like search, with score = similarity.
+function M.similar(root, text, n, cb, opts)
+    opts = opts or {}
+    local out, skip = {}, opts.skip
+    for _, r in ipairs(type(root) == "string" and { root } or root) do
+        local state = state_of(r)
+        if not state.checked then
+            state.checked = true
+            M.build(r)
+        end
+        local idx = state.idx
+        if idx and model_dir then
+            local ranges = opts.paths and #opts.paths > 0 and chunk_ranges(idx, path_filter(opts.paths)) or nil
+            -- depth, not n: the skipped range can cover several chunks
+            for _, t in ipairs(semantic(idx, text, math.max(M.config.depth, 2 * n), ranges)) do
+                if t[2] < M.config.min_similarity then
+                    break
+                end
+                local rel, s, e = index.chunk(idx, t[1])
+                local hit = {
+                    root = r,
+                    path = vim.fs.joinpath(r, rel),
+                    start = s + 1,
+                    ["end"] = e + 1,
+                    score = t[2],
+                    similarity = t[2],
+                }
+                if not (skip and skip.path == hit.path and hit.start <= skip["end"] and skip.start <= hit["end"]) then
+                    out[#out + 1] = hit
+                end
+            end
+        end
+    end
+    table.sort(out, function(a, b)
+        return a.score > b.score
+    end)
+    vim.schedule(function()
+        cb(vim.list_slice(out, 1, n))
+    end)
+end
+
 function M.setup(opts)
     M.config = vim.tbl_deep_extend("force", M.config, opts or {})
     local picker = require("m2v.picker")

@@ -55,8 +55,11 @@ local function roots(cwd, opts)
     return out
 end
 
-local function to_items(hits, query, cwd)
-    local keep_tests = query:lower():find("test") or query:lower():find("spec")
+local function wants_tests(query)
+    return query:lower():find("test") or query:lower():find("spec")
+end
+
+local function to_items(hits, keep_tests, cwd)
     local items = {}
     for _, hit in ipairs(hits) do
         local rel = vim.fs.relpath(cwd, hit.path) or vim.fn.fnamemodify(hit.path, ":~")
@@ -94,6 +97,14 @@ local function quickfix(title, items)
     vim.cmd.copen()
 end
 
+local function show(title, items)
+    if snacks() then
+        require("snacks").picker({ title = title, items = items, format = "file" })
+    else
+        quickfix(title, items)
+    end
+end
+
 -- path:GLOB and -path:GLOB tokens scope the search, -lex skips ripgrep
 local function parse(input, opts)
     opts = opts or {}
@@ -120,12 +131,7 @@ function M.search(input, opts)
     end
     local query, filter = parse(input, opts)
     require("m2v").search(r, query, M.config.n, function(hits)
-        local title, items = "m2v: " .. input, to_items(hits, query, cwd)
-        if snacks() then
-            require("snacks").picker({ title = title, items = items, format = "file" })
-        else
-            quickfix(title, items)
-        end
+        show("m2v: " .. input, to_items(hits, wants_tests(query), cwd))
     end, filter)
 end
 
@@ -149,7 +155,7 @@ function M.live(opts)
                 local items
                 vim.schedule(function()
                     local job = require("m2v").search(r, query, M.config.n, function(h)
-                        items = to_items(h, query, ctx.filter.cwd)
+                        items = to_items(h, wants_tests(query), ctx.filter.cwd)
                         ctx.async:resume()
                     end, filter)
                     ctx.async:on("abort", function()
@@ -174,6 +180,43 @@ function M.search_prompt(opts)
             M.search(q, opts)
         end
     end)
+end
+
+-- chunks similar to the visual selection, or to the indexed chunk under the cursor;
+-- opts.roots and opts.paths as for search
+function M.similar(opts)
+    local m2v = require("m2v")
+    local buf, cwd = vim.api.nvim_get_current_buf(), vim.fn.getcwd()
+    local path = vim.api.nvim_buf_get_name(buf)
+    local r = roots(cwd, opts)
+    if not r then
+        return
+    end
+    local s, e
+    if vim.fn.mode():find("^[vV\22]") then
+        s, e = vim.fn.line("v"), vim.fn.line(".")
+        if s > e then
+            s, e = e, s
+        end
+        vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "nx", false)
+    else
+        local row, own = vim.fn.line("."), m2v.root(path)
+        if own then
+            s, e = m2v.chunk_at(own, path, row)
+        end
+        if not s then
+            local half = math.floor(m2v.config.chunk.target_lines / 2)
+            s, e = math.max(1, row - half), math.min(vim.api.nvim_buf_line_count(buf), row + half)
+        end
+    end
+    local text = table.concat(vim.api.nvim_buf_get_lines(buf, s - 1, e, false), "\n")
+    local name = vim.fs.relpath(cwd, path) or vim.fn.fnamemodify(path, ":~")
+    m2v.similar(r, text, M.config.n, function(hits)
+        if #hits == 0 then
+            return vim.notify("m2v: nothing similar found, the index may still be building", vim.log.levels.INFO)
+        end
+        show(("m2v: similar to %s:%d-%d"):format(name, s, e), to_items(hits, true, cwd))
+    end, { skip = { path = path, start = s, ["end"] = e }, paths = opts and opts.paths })
 end
 
 return M

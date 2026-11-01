@@ -13,6 +13,7 @@ Queries are matched by meaning and fused with `rg` lexical matches, so "code ind
 - Treesitter-aware chunking, with line windows as fallback
 - Background, incremental indexing per project root, parallelised across worker processes
 - Hybrid ranking: cosine similarity fused with `rg` matches (reciprocal rank fusion)
+- "Find similar": chunks that resemble the selection or the code under the cursor
 - ~30 ms queries on a 10k-chunk index
 - [snacks.nvim](https://github.com/folke/snacks.nvim) pickers or the quickfix list, plain Lua API, `:checkhealth m2v`
 
@@ -35,6 +36,7 @@ Queries are matched by meaning and fused with `rg` lexical matches, so "code ind
     keys = {
         { "<leader>fS", function() require("m2v.picker").search_prompt() end, desc = "Semantic search" },
         { "<leader>fL", function() require("m2v.picker").live() end, desc = "Semantic search (live)" },
+        { "<leader>fs", function() require("m2v.picker").similar() end, mode = { "n", "x" }, desc = "Similar code" },
     },
 }
 ```
@@ -50,6 +52,12 @@ Picker queries accept scope tokens, which do not count as words:
 | `-lex` | semantic ranking only, no `rg` half |
 
 Globs follow `rg -g` / gitignore rules: `*.lua` matches the file name at any depth, `lua/**` is anchored at the root. Example: `parse diff hunks path:lua/** -path:tests/** -lex`.
+
+## Find similar
+
+`require("m2v.picker").similar()` embeds the visual selection, or the indexed chunk under the cursor, and lists the closest chunks by cosine (semantic half only, no `rg`). The source chunk itself is left out; `roots` and `paths` options work as for search.
+
+It surfaces copy-pasted and parallel code across modules. Measured on mini.nvim (342 sampled chunks from `lua/mini/*.lua`): 64.7% of the top 5 hits belong to the same module (its source, doc, readme or tests) against 1.9% by chance, 21.9% in another file of that module. On snacks.nvim (188 samples): 58.9% against 16.6%. Examples from mini.nvim: `H.span_distance` in `ai.lua` finds its copy in `surround.lua` at 0.996; `H.is_region_array` finds `H.is_region_pair_array` (0.79) and two `H.is_array_of` copies (0.73, 0.71).
 
 ## Configuration
 
@@ -96,6 +104,10 @@ local root = m2v.root(vim.api.nvim_get_current_buf()) -- nil outside a project
 local job = m2v.search(root, "parse json responses", 10, function(hits) end)
 -- scoped: same globs as the picker tokens; lexical = false drops the rg half
 m2v.search(root, "parse json responses", 10, function(hits) end, { paths = { "lua/**", "!tests/**" }, lexical = false })
+-- chunks resembling a piece of text; skip drops hits overlapping its own range
+m2v.similar(root, text, 10, function(hits) end, { skip = { path = path, start = 10, ["end"] = 40 } })
+-- 1-based range of the indexed chunk holding a row
+local s, e = m2v.chunk_at(root, path, row)
 -- several roots: hits merged by fused score, each hit carries its root
 m2v.search({ root, vim.fn.expand("~/.config/nvim") }, "parse json responses", 10, function(hits) end)
 -- job:kill() cancels the ripgrep half
