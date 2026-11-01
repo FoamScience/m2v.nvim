@@ -54,6 +54,7 @@ opts = {
     root_markers = { ".git" },
     rrf_k = 60, -- reciprocal rank fusion constant
     depth = 100, -- candidates taken from each ranking before fusion
+    min_similarity = 0, -- semantic candidates below this cosine to the query are dropped
     lexical = { max_terms = 16, min_len = 3, max_count = 20 },
     rebuild_delay_ms = 2000,
     cache_size = 32, -- searches remembered per root, dropped on writes, reindex and after cache_ttl_ms; 0 disables
@@ -67,6 +68,8 @@ opts = {
 }
 ```
 
+Pickers show each semantic hit's cosine to the query next to the file name. Cosines are not calibrated across queries or corpora: on mini.nvim, the best chunk for "banana smoothie recipe" scores 0.22 while relevant top hits for real queries score 0.4-0.7, and on a small repo relevant top hits can sit below 0.3. Pick `min_similarity` per corpus, or leave it at 0.
+
 ### Parallel indexing
 
 With `workers > 1` the indexer runs as a coordinator: it lists files, reuses unchanged chunks from the previous index, shards the rest by size across up to `workers` child `nvim -l` processes, and merges their output in file order. Each worker loads the model (about 300 MB peak RSS for potion-code-16M-v2). Fewer than 32 changed files per worker reduces the worker count, so a rebuild after a few saves embeds in the coordinator alone. `vectors.bin` is byte-identical for any worker count.
@@ -76,7 +79,8 @@ With `workers > 1` the indexer runs as a coordinator: it lists files, reuses unc
 ```lua
 local m2v = require("m2v")
 local root = m2v.root(vim.api.nvim_get_current_buf()) -- nil outside a project
--- hits: { path, start, end, score }, 1-based inclusive lines, best first
+-- hits: { path, start, end, score, similarity? }, 1-based inclusive lines, best first
+-- similarity: cosine to the query, set on chunks the semantic half ranked
 local job = m2v.search(root, "parse json responses", 10, function(hits) end)
 -- job:kill() cancels the ripgrep half
 ```
