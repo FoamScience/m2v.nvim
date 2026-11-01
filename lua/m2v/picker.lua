@@ -3,6 +3,8 @@ local M = {}
 
 M.config = {
     n = 30,
+    -- other project roots searched alongside the current one
+    roots = {},
     -- live picker waits for this many words before searching
     min_live_words = 3,
     -- hits in tests are hidden unless the query mentions test or spec
@@ -27,20 +29,35 @@ local function is_test(path)
     return false
 end
 
+local warned = {}
+
 -- never index a directory without a project marker, like ~
-local function root(cwd)
+local function roots(cwd, opts)
     local r = require("m2v").root(cwd)
     if not r then
         vim.notify("m2v: no project root above " .. cwd, vim.log.levels.WARN)
+        return
     end
-    return r
+    local out = { r }
+    for _, extra in ipairs(opts and opts.roots or M.config.roots) do
+        extra = vim.fs.normalize(vim.fn.expand(extra))
+        if vim.fn.isdirectory(extra) == 0 then
+            if not warned[extra] then
+                warned[extra] = true
+                vim.notify("m2v: not a directory: " .. extra, vim.log.levels.WARN)
+            end
+        elseif not vim.list_contains(out, extra) then
+            out[#out + 1] = extra
+        end
+    end
+    return out
 end
 
 local function to_items(hits, query, cwd)
     local keep_tests = query:lower():find("test") or query:lower():find("spec")
     local items = {}
     for _, hit in ipairs(hits) do
-        local rel = vim.fs.relpath(cwd, hit.path) or hit.path
+        local rel = vim.fs.relpath(cwd, hit.path) or vim.fn.fnamemodify(hit.path, ":~")
         if keep_tests or not is_test(rel) then
             local line = vim.fn.readfile(hit.path, "", hit.start)[hit.start] or ""
             table.insert(items, {
@@ -55,9 +72,10 @@ local function to_items(hits, query, cwd)
     return items
 end
 
-function M.search(query)
+-- opts.roots replaces config.roots for this search
+function M.search(query, opts)
     local cwd = vim.fn.getcwd()
-    local r = root(cwd)
+    local r = roots(cwd, opts)
     if not r then
         return
     end
@@ -66,7 +84,7 @@ function M.search(query)
     end)
 end
 
-function M.live()
+function M.live(opts)
     require("snacks").picker({
         title = "m2v (live)",
         live = true,
@@ -74,7 +92,7 @@ function M.live()
         format = "file",
         finder = function(_, ctx)
             local query = vim.trim(ctx.filter.search)
-            local r = #vim.split(query, "%s+") >= M.config.min_live_words and root(ctx.filter.cwd)
+            local r = #vim.split(query, "%s+") >= M.config.min_live_words and roots(ctx.filter.cwd, opts)
             if not r then
                 return {}
             end
@@ -101,10 +119,10 @@ function M.live()
 end
 
 -- prompts for the query when none is given
-function M.search_prompt()
+function M.search_prompt(opts)
     vim.ui.input({ prompt = "Semantic search: " }, function(q)
         if q and q ~= "" then
-            M.search(q)
+            M.search(q, opts)
         end
     end)
 end

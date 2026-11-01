@@ -62,6 +62,7 @@ opts = {
     workers = math.min(4, #vim.uv.cpu_info()), -- indexer processes for a full index; 1 = single process
     picker = {
         n = 30,
+        roots = {}, -- other project roots searched alongside the current one, e.g. { "~/.config/nvim" }
         min_live_words = 3,
         test_patterns = { ... }, -- hidden unless the query mentions test or spec
     },
@@ -79,11 +80,15 @@ With `workers > 1` the indexer runs as a coordinator: it lists files, reuses unc
 ```lua
 local m2v = require("m2v")
 local root = m2v.root(vim.api.nvim_get_current_buf()) -- nil outside a project
--- hits: { path, start, end, score, similarity? }, 1-based inclusive lines, best first
+-- hits: { root, path, start, end, score, similarity? }, 1-based inclusive lines, best first
 -- similarity: cosine to the query, set on chunks the semantic half ranked
 local job = m2v.search(root, "parse json responses", 10, function(hits) end)
+-- several roots: hits merged by fused score, each hit carries its root
+m2v.search({ root, vim.fn.expand("~/.config/nvim") }, "parse json responses", 10, function(hits) end)
 -- job:kill() cancels the ripgrep half
 ```
+
+The pickers take the same option per call: `require("m2v.picker").live({ roots = { "~/notes" } })`. Extra roots need no root marker; they are indexed on their first search.
 
 ## Models
 

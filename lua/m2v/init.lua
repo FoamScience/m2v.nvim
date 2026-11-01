@@ -344,10 +344,7 @@ function M.root(path)
     return vim.fs.root(path, M.config.root_markers)
 end
 
--- cb gets { path, start, end, score, similarity? } with 1-based inclusive lines, best first.
--- similarity is the cosine to the query for chunks the semantic half ranked.
--- Returns a handle with :kill() for the ripgrep half.
-function M.search(root, query, n, cb)
+local function search_root(root, query, n, cb)
     local state = state_of(root)
     if not state.checked then
         state.checked = true
@@ -375,7 +372,7 @@ function M.search(root, query, n, cb)
         local function from_chunk(c)
             return function()
                 local rel, s, e = index.chunk(idx, c)
-                return { path = vim.fs.joinpath(root, rel), start = s + 1, ["end"] = e + 1 }
+                return { root = root, path = vim.fs.joinpath(root, rel), start = s + 1, ["end"] = e + 1 }
             end
         end
         if idx and model_dir then
@@ -391,6 +388,7 @@ function M.search(root, query, n, cb)
             add(hit.key, rank, type(hit.key) == "number" and from_chunk(hit.key) or function()
                 local s = hit.row - hit.row % M.config.chunk.target_lines
                 return {
+                    root = root,
                     path = vim.fs.joinpath(root, hit.rel),
                     start = s + 1,
                     ["end"] = s + M.config.chunk.target_lines,
@@ -410,6 +408,41 @@ function M.search(root, query, n, cb)
         end
         cb(out)
     end)
+end
+
+-- root is one project root or a list of them; hits from several roots are merged by score.
+-- cb gets { root, path, start, end, score, similarity? } with 1-based inclusive lines, best first.
+-- similarity is the cosine to the query for chunks the semantic half ranked.
+-- Returns a handle with :kill() for the ripgrep half.
+function M.search(root, query, n, cb)
+    if type(root) == "string" then
+        return search_root(root, query, n, cb)
+    end
+    local left, all, jobs = #root, {}, {}
+    if left == 0 then
+        return vim.schedule(function()
+            cb({})
+        end)
+    end
+    for i, r in ipairs(root) do
+        jobs[i] = search_root(r, query, n, function(hits)
+            vim.list_extend(all, hits)
+            left = left - 1
+            if left == 0 then
+                table.sort(all, function(a, b)
+                    return a.score > b.score
+                end)
+                cb(vim.list_slice(all, 1, n))
+            end
+        end)
+    end
+    return {
+        kill = function(_, signal)
+            for _, job in pairs(jobs) do
+                job:kill(signal)
+            end
+        end,
+    }
 end
 
 function M.setup(opts)
