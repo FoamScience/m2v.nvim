@@ -13,6 +13,8 @@ M.config = {
     rrf_k = 60,
     -- candidates taken from each ranking before fusion
     depth = 100,
+    -- semantic candidates below this cosine to the query are dropped before fusion
+    min_similarity = 0,
     lexical = { max_terms = 16, min_len = 3, max_count = 20 },
     rebuild_delay_ms = 2000,
     -- searches remembered per root, dropped on writes, reindex and after cache_ttl_ms; 0 disables
@@ -251,9 +253,7 @@ local function semantic(idx, query, depth)
             top[depth + 1] = nil
         end
     end
-    return vim.tbl_map(function(t)
-        return t[1]
-    end, top)
+    return top
 end
 
 local function terms(query)
@@ -344,7 +344,8 @@ function M.root(path)
     return vim.fs.root(path, M.config.root_markers)
 end
 
--- cb gets { path, start, end, score } with 1-based inclusive lines, best first.
+-- cb gets { path, start, end, score, similarity? } with 1-based inclusive lines, best first.
+-- similarity is the cosine to the query for chunks the semantic half ranked.
 -- Returns a handle with :kill() for the ripgrep half.
 function M.search(root, query, n, cb)
     local state = state_of(root)
@@ -378,8 +379,12 @@ function M.search(root, query, n, cb)
             end
         end
         if idx and model_dir then
-            for rank, c in ipairs(semantic(idx, query, M.config.depth)) do
-                add(c, rank, from_chunk(c))
+            for rank, t in ipairs(semantic(idx, query, M.config.depth)) do
+                if t[2] < M.config.min_similarity then
+                    break
+                end
+                add(t[1], rank, from_chunk(t[1]))
+                fused[t[1]].similarity = t[2]
             end
         end
         for rank, hit in ipairs(lex) do

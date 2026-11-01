@@ -47,6 +47,7 @@ local function to_items(hits, query, cwd)
                 file = hit.path,
                 pos = { hit.start, 0 },
                 end_pos = { hit["end"], 0 },
+                comment = hit.similarity and (" %.2f"):format(hit.similarity),
                 text = rel .. " " .. vim.trim(line),
             })
         end
