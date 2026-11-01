@@ -4,7 +4,7 @@ local chunk = require("m2v.chunk")
 
 local M = {}
 
-local VERSION = 1
+local VERSION = 2
 
 local function read(path)
     local f = io.open(path, "rb")
@@ -88,10 +88,15 @@ local function embed_file(root, rel, model, opts, vec, out, rows)
     local ft = vim.filetype.match({ filename = abs })
         or lines[1]:find("^#!") and vim.filetype.match({ filename = abs, contents = lines })
         or nil
+    -- help files are only told apart from text by their modeline
+    local modeline = ft == "text" and table.concat(lines, "\n", math.max(1, #lines - 4)) or ""
+    if modeline:find("%f[%w]ft=help%f[%W]") or modeline:find("filetype=help%f[%W]") then
+        ft = "help"
+    end
     local lang = ft and vim.treesitter.language.get_lang(ft)
     local count = 0
     for _, r in ipairs(chunk.split(lines, lang, opts.chunk)) do
-        local text = rel .. "\n" .. table.concat(lines, "\n", r[1] + 1, r[2] + 1)
+        local text = rel .. "\n" .. (r[3] and r[3] .. "\n" or "") .. table.concat(lines, "\n", r[1] + 1, r[2] + 1)
         if model:embed(text, vec) then
             out:write(ffi.string(vec, model.dim * 4))
             rows[#rows + 1], rows[#rows + 2] = r[1], r[2]

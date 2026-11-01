@@ -10,7 +10,7 @@ Queries are matched by meaning and fused with `rg` lexical matches, so "code ind
 ## Features
 
 - Pure Lua model2vec inference: WordPiece and Unigram tokenizers, mmap'd safetensors (F16/F32)
-- Treesitter-aware chunking, with line windows as fallback
+- Treesitter-aware chunking for code; Markdown and vim help split at headings, each chunk embedded with its heading path; line windows as fallback
 - Background, incremental indexing per project root, parallelised across worker processes
 - Hybrid ranking: cosine similarity fused with `rg` matches (reciprocal rank fusion)
 - "Find similar": chunks that resemble the selection or the code under the cursor
@@ -140,7 +140,7 @@ All listed models are tested and work.
 |---|---|
 | `lua/m2v/tokenizer.lua` | BERT WordPiece (BertNormalizer + BertPreTokenizer); Unigram (sentencepiece precompiled charsmap + Metaspace + Viterbi) |
 | `lua/m2v/model.lua` | safetensors loader (mmap), mean pooling with model2vec mapping/weights, L2 normalization |
-| `lua/m2v/chunk.lua` | treesitter chunking: top-level nodes, split when too big, small neighbours merged |
+| `lua/m2v/chunk.lua` | treesitter chunking: top-level nodes, split when too big, small neighbours merged; Markdown/help sections by heading |
 | `lua/m2v/index.lua`, `indexer.lua` | per-root index built by a background `nvim -l`, incremental by mtime/size, sharded across workers |
 | `lua/m2v/init.lua` | model lookup/download; brute-force cosine search fused with `rg` |
 | `lua/m2v/picker.lua` | snacks.nvim pickers, quickfix fallback (`live()` then prompts for one query) |
