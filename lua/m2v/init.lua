@@ -225,7 +225,42 @@ function M.build(root)
     end)
 end
 
-local function semantic(idx, query, depth)
+-- gitignore-style globs, like rg -g: without a slash a glob matches the file name, "!" excludes
+local function path_filter(globs)
+    local include, exclude = {}, {}
+    for _, g in ipairs(globs) do
+        local negated = g:sub(1, 1) == "!"
+        g = negated and g:sub(2) or g
+        table.insert(
+            negated and exclude or include,
+            { lpeg = vim.glob.to_lpeg((g:gsub("^/", ""))), base = not g:find("/") }
+        )
+    end
+    local function any(list, rel)
+        for _, m in ipairs(list) do
+            if m.lpeg:match(m.base and vim.fs.basename(rel) or rel) then
+                return true
+            end
+        end
+        return false
+    end
+    return function(rel)
+        return (#include == 0 or any(include, rel)) and not any(exclude, rel)
+    end
+end
+
+-- first chunk and chunk count of every indexed file passing keep
+local function chunk_ranges(idx, keep)
+    local out = {}
+    for _, f in ipairs(idx.meta.files) do
+        if f.count > 0 and keep(f.path) then
+            out[#out + 1] = { f.first, f.count }
+        end
+    end
+    return out
+end
+
+local function semantic(idx, query, depth, ranges)
     if not model then
         model = require("m2v.model").load(model_dir, M.config.max_tokens)
     end
@@ -234,23 +269,25 @@ local function semantic(idx, query, depth)
         return {}
     end
     local v, dim, top = idx.vectors, idx.dim, {}
-    for c = 0, idx.n - 1 do
-        local s, base = 0, c * dim
-        for j = 0, dim - 1 do
-            s = s + v[base + j] * q[j]
-        end
-        if #top < depth or s > top[#top][2] then
-            local lo, hi = 1, #top + 1
-            while lo < hi do
-                local mid = math.floor((lo + hi) / 2)
-                if top[mid][2] >= s then
-                    lo = mid + 1
-                else
-                    hi = mid
-                end
+    for _, range in ipairs(ranges or { { 0, idx.n } }) do
+        for c = range[1], range[1] + range[2] - 1 do
+            local s, base = 0, c * dim
+            for j = 0, dim - 1 do
+                s = s + v[base + j] * q[j]
             end
-            table.insert(top, lo, { c, s })
-            top[depth + 1] = nil
+            if #top < depth or s > top[#top][2] then
+                local lo, hi = 1, #top + 1
+                while lo < hi do
+                    local mid = math.floor((lo + hi) / 2)
+                    if top[mid][2] >= s then
+                        lo = mid + 1
+                    else
+                        hi = mid
+                    end
+                end
+                table.insert(top, lo, { c, s })
+                top[depth + 1] = nil
+            end
         end
     end
     return top
@@ -293,12 +330,15 @@ local function locate(idx, rel, row)
     return rel .. ":" .. math.floor(row / M.config.chunk.target_lines)
 end
 
-local function lexical(root, idx, query, cb)
+local function lexical(root, idx, query, opts, cb)
     local words = terms(query)
-    if #words == 0 or vim.fn.executable("rg") == 0 then
+    if opts.lexical == false or #words == 0 or vim.fn.executable("rg") == 0 then
         return cb({})
     end
     local cmd = { "rg", "--json", "-i", "-F", "--max-count", tostring(M.config.lexical.max_count) }
+    for _, g in ipairs(opts.paths or {}) do
+        vim.list_extend(cmd, { "-g", g })
+    end
     for _, w in ipairs(words) do
         vim.list_extend(cmd, { "-e", w })
     end
@@ -344,14 +384,14 @@ function M.root(path)
     return vim.fs.root(path, M.config.root_markers)
 end
 
-local function search_root(root, query, n, cb)
+local function search_root(root, query, n, cb, opts)
     local state = state_of(root)
     if not state.checked then
         state.checked = true
         M.build(root)
     end
     local idx = state.idx
-    local key = n .. "\0" .. query
+    local key = table.concat({ n, query, vim.json.encode(opts) }, "\0")
     local cached = cache_get(state, key)
     if cached then
         vim.schedule(function()
@@ -359,7 +399,7 @@ local function search_root(root, query, n, cb)
         end)
         return
     end
-    return lexical(root, idx, query, function(lex)
+    return lexical(root, idx, query, opts, function(lex)
         local fused, keys = {}, {}
         local function add(key, rank, fill)
             if not fused[key] then
@@ -376,7 +416,8 @@ local function search_root(root, query, n, cb)
             end
         end
         if idx and model_dir then
-            for rank, t in ipairs(semantic(idx, query, M.config.depth)) do
+            local ranges = opts.paths and #opts.paths > 0 and chunk_ranges(idx, path_filter(opts.paths)) or nil
+            for rank, t in ipairs(semantic(idx, query, M.config.depth, ranges)) do
                 if t[2] < M.config.min_similarity then
                     break
                 end
@@ -413,10 +454,13 @@ end
 -- root is one project root or a list of them; hits from several roots are merged by score.
 -- cb gets { root, path, start, end, score, similarity? } with 1-based inclusive lines, best first.
 -- similarity is the cosine to the query for chunks the semantic half ranked.
+-- opts.paths: gitignore-style globs limiting both halves ("*.lua", "lua/**", "!tests/**");
+-- opts.lexical = false skips ripgrep.
 -- Returns a handle with :kill() for the ripgrep half.
-function M.search(root, query, n, cb)
+function M.search(root, query, n, cb, opts)
+    opts = opts or {}
     if type(root) == "string" then
-        return search_root(root, query, n, cb)
+        return search_root(root, query, n, cb, opts)
     end
     local left, all, jobs = #root, {}, {}
     if left == 0 then
@@ -434,7 +478,7 @@ function M.search(root, query, n, cb)
                 end)
                 cb(vim.list_slice(all, 1, n))
             end
-        end)
+        end, opts)
     end
     return {
         kill = function(_, signal)
