@@ -15,6 +15,10 @@ M.config = {
     depth = 100,
     lexical = { max_terms = 16, min_len = 3, max_count = 20 },
     rebuild_delay_ms = 2000,
+    -- searches remembered per root, dropped on writes, reindex and after cache_ttl_ms; 0 disables
+    cache_size = 32,
+    -- bounds staleness from changes made outside the editor
+    cache_ttl_ms = 60000,
     -- indexer processes for a full index; 1 embeds in the single indexer process
     workers = math.min(4, #vim.uv.cpu_info()),
 }
@@ -127,8 +131,42 @@ local function progress(state, message, finish)
     end
 end
 
+local function cache_clear(state)
+    state.cache, state.lru = {}, {}
+end
+
+local function cache_get(state, key)
+    local entry = state.cache[key]
+    if not entry then
+        return
+    end
+    table.remove(state.lru, vim.fn.index(state.lru, key) + 1)
+    if vim.uv.now() - entry.at > M.config.cache_ttl_ms then
+        state.cache[key] = nil
+        return
+    end
+    table.insert(state.lru, key)
+    return entry.hits
+end
+
+local function cache_put(state, key, hits)
+    if M.config.cache_size <= 0 then
+        return
+    end
+    if not state.cache[key] then
+        table.insert(state.lru, key)
+        if #state.lru > M.config.cache_size then
+            state.cache[table.remove(state.lru, 1)] = nil
+        end
+    end
+    state.cache[key] = { hits = hits, at = vim.uv.now() }
+end
+
 local function state_of(root)
-    roots[root] = roots[root] or { dir = index_dir(root) }
+    if not roots[root] then
+        roots[root] = { dir = index_dir(root) }
+        cache_clear(roots[root])
+    end
     local state = roots[root]
     if not state.idx then
         state.idx = index.load(state.dir)
@@ -175,6 +213,7 @@ function M.build(root)
                     return
                 end
                 state.idx = index.load(state.dir)
+                cache_clear(state)
                 progress(state, ("%d chunks"):format(state.idx and state.idx.n or 0), true)
                 if state.dirty then
                     M.build(root)
@@ -314,6 +353,14 @@ function M.search(root, query, n, cb)
         M.build(root)
     end
     local idx = state.idx
+    local key = n .. "\0" .. query
+    local cached = cache_get(state, key)
+    if cached then
+        vim.schedule(function()
+            cb(cached)
+        end)
+        return
+    end
     return lexical(root, idx, query, function(lex)
         local fused, keys = {}, {}
         local function add(key, rank, fill)
@@ -351,7 +398,12 @@ function M.search(root, query, n, cb)
         table.sort(out, function(a, b)
             return a.score > b.score
         end)
-        cb(vim.list_slice(out, 1, n))
+        out = vim.list_slice(out, 1, n)
+        -- lexical-only results would outlive the index load
+        if idx and model_dir then
+            cache_put(state, key, out)
+        end
+        cb(out)
     end)
 end
 
@@ -367,6 +419,7 @@ function M.setup(opts)
             if not root or not roots[root] then
                 return
             end
+            cache_clear(roots[root])
             timers[root] = timers[root] or vim.uv.new_timer()
             timers[root]:start(
                 M.config.rebuild_delay_ms,
