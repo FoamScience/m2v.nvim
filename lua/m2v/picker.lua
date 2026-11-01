@@ -72,16 +72,34 @@ local function to_items(hits, query, cwd)
     return items
 end
 
--- opts.roots replaces config.roots for this search
-function M.search(query, opts)
+-- path:GLOB and -path:GLOB tokens scope the search, -lex skips ripgrep
+local function parse(input, opts)
+    opts = opts or {}
+    local words, filter = {}, { paths = vim.list_extend({}, opts.paths or {}), lexical = opts.lexical }
+    for w in input:gmatch("%S+") do
+        local negated, glob = w:match("^(%-?)path:(.+)$")
+        if glob then
+            table.insert(filter.paths, (negated == "-" and "!" or "") .. glob)
+        elseif w == "-lex" then
+            filter.lexical = false
+        else
+            words[#words + 1] = w
+        end
+    end
+    return table.concat(words, " "), filter
+end
+
+-- opts.roots replaces config.roots for this search, opts.paths adds globs, opts.lexical = false skips rg
+function M.search(input, opts)
     local cwd = vim.fn.getcwd()
     local r = roots(cwd, opts)
     if not r then
         return
     end
+    local query, filter = parse(input, opts)
     require("m2v").search(r, query, M.config.n, function(hits)
-        require("snacks").picker({ title = "m2v: " .. query, items = to_items(hits, query, cwd), format = "file" })
-    end)
+        require("snacks").picker({ title = "m2v: " .. input, items = to_items(hits, query, cwd), format = "file" })
+    end, filter)
 end
 
 function M.live(opts)
@@ -91,7 +109,7 @@ function M.live(opts)
         supports_live = true,
         format = "file",
         finder = function(_, ctx)
-            local query = vim.trim(ctx.filter.search)
+            local query, filter = parse(ctx.filter.search, opts)
             local r = #vim.split(query, "%s+") >= M.config.min_live_words and roots(ctx.filter.cwd, opts)
             if not r then
                 return {}
@@ -102,7 +120,7 @@ function M.live(opts)
                     local job = require("m2v").search(r, query, M.config.n, function(h)
                         items = to_items(h, query, ctx.filter.cwd)
                         ctx.async:resume()
-                    end)
+                    end, filter)
                     ctx.async:on("abort", function()
                         if job then
                             job:kill(15)

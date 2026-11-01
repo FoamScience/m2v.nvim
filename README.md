@@ -41,6 +41,16 @@ Queries are matched by meaning and fused with `rg` lexical matches, so "code ind
 
 Only directories with a root marker (`.git` by default) are indexed. Indexes live in `stdpath("cache")/m2v/index/`, are built in the background on first search and refreshed after writes. The live picker starts searching once the query has 3 words (`picker.min_live_words`).
 
+Picker queries accept scope tokens, which do not count as words:
+
+| token | effect |
+|---|---|
+| `path:GLOB` | only files matching GLOB (repeatable) |
+| `-path:GLOB` | skip files matching GLOB |
+| `-lex` | semantic ranking only, no `rg` half |
+
+Globs follow `rg -g` / gitignore rules: `*.lua` matches the file name at any depth, `lua/**` is anchored at the root. Example: `parse diff hunks path:lua/** -path:tests/** -lex`.
+
 ## Configuration
 
 Defaults:
@@ -83,6 +93,8 @@ local root = m2v.root(vim.api.nvim_get_current_buf()) -- nil outside a project
 -- hits: { root, path, start, end, score, similarity? }, 1-based inclusive lines, best first
 -- similarity: cosine to the query, set on chunks the semantic half ranked
 local job = m2v.search(root, "parse json responses", 10, function(hits) end)
+-- scoped: same globs as the picker tokens; lexical = false drops the rg half
+m2v.search(root, "parse json responses", 10, function(hits) end, { paths = { "lua/**", "!tests/**" }, lexical = false })
 -- several roots: hits merged by fused score, each hit carries its root
 m2v.search({ root, vim.fn.expand("~/.config/nvim") }, "parse json responses", 10, function(hits) end)
 -- job:kill() cancels the ripgrep half
