@@ -56,6 +56,8 @@ opts = {
     depth = 100, -- candidates taken from each ranking before fusion
     lexical = { max_terms = 16, min_len = 3, max_count = 20 },
     rebuild_delay_ms = 2000,
+    cache_size = 32, -- searches remembered per root, dropped on writes, reindex and after cache_ttl_ms; 0 disables
+    cache_ttl_ms = 60000,
     workers = math.min(4, #vim.uv.cpu_info()), -- indexer processes for a full index; 1 = single process
     picker = {
         n = 30,
