@@ -1,6 +1,19 @@
 -- snacks.nvim pickers over m2v.search, quickfix list without snacks
 local M = {}
 
+---@class m2v.PickerConfig
+---@field n integer
+---@field ui "auto"|"quickfix"
+---@field roots string[]
+---@field min_live_words integer
+---@field test_patterns string[] Lua patterns
+
+---@class m2v.PickerOpts
+---@field roots? string[] replaces config.roots
+---@field paths? string[]
+---@field lexical? boolean
+
+---@type m2v.PickerConfig
 M.config = {
     n = 30,
     -- "auto" uses snacks.nvim when installed, "quickfix" always fills the quickfix list
@@ -124,6 +137,8 @@ local function parse(input, opts)
 end
 
 -- opts.roots replaces config.roots for this search, opts.paths adds globs, opts.lexical = false skips rg
+---@param input string query, may hold path:, -path: and -lex tokens
+---@param opts? m2v.PickerOpts
 function M.search(input, opts)
     local cwd = vim.fn.getcwd()
     local r = roots(cwd, opts)
@@ -137,6 +152,7 @@ function M.search(input, opts)
 end
 
 -- falls back to search_prompt without snacks
+---@param opts? m2v.PickerOpts
 function M.live(opts)
     if not snacks() then
         return M.search_prompt(opts)
@@ -175,6 +191,7 @@ function M.live(opts)
 end
 
 -- prompts for the query when none is given
+---@param opts? m2v.PickerOpts
 function M.search_prompt(opts)
     vim.ui.input({ prompt = "Semantic search: " }, function(q)
         if q and q ~= "" then
