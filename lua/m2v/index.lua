@@ -74,7 +74,7 @@ local function binary(data)
     return data:sub(1, 8000):find("\0", 1, true) ~= nil
 end
 
-local script = vim.fs.joinpath(vim.fs.dirname(debug.getinfo(1, "S").source:sub(2)), "..", "..", "indexer.lua")
+local script = vim.fs.joinpath(vim.fs.dirname(debug.getinfo(1, "S").source:sub(2)), "indexer.lua")
 
 -- embeds every chunk of one file: vectors appended to out, start/end rows appended flat to rows
 local function embed_file(root, rel, model, opts, vec, out, rows)

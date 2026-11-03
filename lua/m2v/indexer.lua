@@ -1,6 +1,8 @@
--- nvim -l indexer.lua <root> <index dir> <model dir> <opts json>
--- nvim -l indexer.lua --worker <root> <model dir> <opts json> <shard prefix>
-vim.opt.rtp:prepend(vim.fs.dirname(debug.getinfo(1, "S").source:sub(2)))
+-- nvim -l lua/m2v/indexer.lua <root> <index dir> <model dir> <opts json>
+-- nvim -l lua/m2v/indexer.lua --worker <root> <model dir> <opts json> <shard prefix>
+-- parent of m2v/: lua/ in a checkout, share/lua/5.1 in a luarocks tree
+local lua_dir = vim.fs.dirname(vim.fs.dirname(debug.getinfo(1, "S").source:sub(2)))
+package.path = ("%s/?.lua;%s/?/init.lua;"):format(lua_dir, lua_dir) .. package.path
 local index = require("m2v.index")
 
 local function progress(done, total)
