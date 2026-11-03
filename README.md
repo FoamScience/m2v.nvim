@@ -15,11 +15,11 @@ Queries are matched by meaning and fused with `rg` lexical matches, so "code ind
 - Hybrid ranking: cosine similarity fused with `rg` matches (reciprocal rank fusion)
 - "Find similar": chunks that resemble the selection or the code under the cursor
 - ~30 ms queries on a 10k-chunk index
-- [snacks.nvim](https://github.com/folke/snacks.nvim) pickers or the quickfix list, plain Lua API, `:checkhealth m2v`
+- [snacks.nvim](https://github.com/folke/snacks.nvim) pickers or the quickfix list, `:M2v` command, plain Lua API, `:checkhealth m2v`, `:help m2v`
 
 ## Requirements
 
-- Neovim built with LuaJIT (tested on 0.12.6)
+- Neovim 0.11+ built with LuaJIT (tested on 0.12.6)
 - `rg` for file listing and lexical ranking (`git ls-files` is the listing fallback)
 - `curl` for the one-time model download
 - snacks.nvim for the pickers (optional: without it results go to the quickfix list)
@@ -31,15 +31,22 @@ Queries are matched by meaning and fused with `rg` lexical matches, so "code ind
 ```lua
 {
     "FoamScience/m2v.nvim",
-    main = "m2v",
-    opts = {},
     keys = {
-        { "<leader>fS", function() require("m2v.picker").search_prompt() end, desc = "Semantic search" },
-        { "<leader>fL", function() require("m2v.picker").live() end, desc = "Semantic search (live)" },
-        { "<leader>fs", function() require("m2v.picker").similar() end, mode = { "n", "x" }, desc = "Similar code" },
+        { "<leader>fS", "<Plug>(m2v-search)", desc = "Semantic search" },
+        { "<leader>fL", "<Plug>(m2v-live)", desc = "Semantic search (live)" },
+        { "<leader>fs", "<Plug>(m2v-similar)", mode = { "n", "x" }, desc = "Similar code" },
     },
 }
 ```
+
+No `setup()` call is needed. Options go in `vim.g.m2v` or `require("m2v").setup(opts)` (lazy.nvim `opts`); see [Configuration](#configuration).
+
+| command | effect |
+|---|---|
+| `:M2v search [query]` | search the current project, prompts without a query |
+| `:M2v live` | live picker |
+| `:[range]M2v similar` | chunks similar to the range, or to the chunk under the cursor |
+| `:M2v build` | index the current project now |
 
 Only directories with a root marker (`.git` by default) are indexed. Indexes live in `stdpath("cache")/m2v/index/`, are built in the background on first search and refreshed after writes. The live picker starts searching once the query has 3 words (`picker.min_live_words`).
 
@@ -61,10 +68,10 @@ It surfaces copy-pasted and parallel code across modules. Measured on mini.nvim 
 
 ## Configuration
 
-Defaults:
+Defaults, validated on load:
 
 ```lua
-opts = {
+vim.g.m2v = {
     model = "minishlab/potion-code-16M-v2",
     max_tokens = 512,
     max_file_bytes = 256 * 1024,
@@ -145,6 +152,8 @@ All listed models are tested and work.
 | `lua/m2v/init.lua` | model lookup/download; brute-force cosine search fused with `rg` |
 | `lua/m2v/picker.lua` | snacks.nvim pickers, quickfix fallback (`live()` then prompts for one query) |
 | `lua/m2v/health.lua` | `:checkhealth m2v` |
+| `plugin/m2v.lua` | `:M2v` command and `<Plug>` mappings, no module loaded at startup |
+| `doc/m2v.txt` | `:help m2v` |
 
 ## Benchmarks
 
@@ -233,3 +242,7 @@ Embeddings vs `model2vec.StaticModel.encode` 0.10.0, cosine between normalized v
 | potion-multilingual-128M | 19 multilingual + 400 mini.nvim lines | 1.000000 | 1.000000 |
 
 </details>
+
+## License
+
+[MIT](LICENSE)
