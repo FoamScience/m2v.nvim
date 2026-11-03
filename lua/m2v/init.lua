@@ -39,7 +39,7 @@ end
 
 local roots = {}
 local model, model_dir, downloading
-local script = vim.fs.joinpath(vim.fs.dirname(debug.getinfo(1, "S").source:sub(2)), "..", "..", "indexer.lua")
+local script = vim.fs.joinpath(vim.fs.dirname(debug.getinfo(1, "S").source:sub(2)), "indexer.lua")
 
 local function has_files(dir)
     for _, f in ipairs(MODEL_FILES) do

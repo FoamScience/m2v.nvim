@@ -141,7 +141,7 @@ All listed models are tested and work.
 | `lua/m2v/tokenizer.lua` | BERT WordPiece (BertNormalizer + BertPreTokenizer); Unigram (sentencepiece precompiled charsmap + Metaspace + Viterbi) |
 | `lua/m2v/model.lua` | safetensors loader (mmap), mean pooling with model2vec mapping/weights, L2 normalization |
 | `lua/m2v/chunk.lua` | treesitter chunking: top-level nodes, split when too big, small neighbours merged; Markdown/help sections by heading |
-| `lua/m2v/index.lua`, `indexer.lua` | per-root index built by a background `nvim -l`, incremental by mtime/size, sharded across workers |
+| `lua/m2v/index.lua`, `lua/m2v/indexer.lua` | per-root index built by a background `nvim -l`, incremental by mtime/size, sharded across workers |
 | `lua/m2v/init.lua` | model lookup/download; brute-force cosine search fused with `rg` |
 | `lua/m2v/picker.lua` | snacks.nvim pickers, quickfix fallback (`live()` then prompts for one query) |
 | `lua/m2v/health.lua` | `:checkhealth m2v` |
@@ -181,7 +181,7 @@ Results overlap heavily; sgrep ranks `lua/mini/git.lua` first for q2.
 <details>
 <summary>Parallel indexing</summary>
 
-Full index via `nvim -l indexer.lua`, summed RSS of the process tree sampled every 50 ms. The model is mmap'd read-only, so shared page-cache pages are counted once per process.
+Full index via `nvim -l lua/m2v/indexer.lua`, summed RSS of the process tree sampled every 50 ms. The model is mmap'd read-only, so shared page-cache pages are counted once per process.
 
 | model, workers | full index | peak RSS (all processes) |
 |---|---|---|
