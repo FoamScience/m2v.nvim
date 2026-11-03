@@ -3,6 +3,42 @@ local index = require("m2v.index")
 
 local M = {}
 
+---@class m2v.Config
+---@field model string Hugging Face model id
+---@field max_tokens integer
+---@field max_file_bytes integer
+---@field chunk { max_lines: integer, target_lines: integer }
+---@field root_markers string[]
+---@field rrf_k number
+---@field depth integer
+---@field min_similarity number
+---@field lexical { max_terms: integer, min_len: integer, max_count: integer }
+---@field rebuild_delay_ms integer
+---@field cache_size integer
+---@field cache_ttl_ms integer
+---@field workers integer
+---@field picker? m2v.PickerConfig
+
+---@class m2v.Hit
+---@field root string
+---@field path string absolute
+---@field start integer 1-based, inclusive
+---@field end integer 1-based, inclusive
+---@field score number
+---@field similarity? number cosine to the query, set when the semantic half ranked the chunk
+
+---@class m2v.SearchOpts
+---@field paths? string[]
+---@field lexical? boolean
+
+---@class m2v.SimilarOpts
+---@field paths? string[]
+---@field skip? { path: string, start: integer, end: integer }
+
+---@class m2v.Job
+---@field kill fun(self: m2v.Job, signal?: integer|string)
+
+---@type m2v.Config
 M.config = {
     model = "minishlab/potion-code-16M-v2",
     max_tokens = 512,
@@ -64,6 +100,8 @@ local function find_model()
 end
 
 -- model dir if already on disk, else nil and where it would be downloaded
+---@return string? dir
+---@return string? download
 function M.model_dir()
     return find_model()
 end
@@ -176,6 +214,8 @@ local function state_of(root)
     return state
 end
 
+--- Builds or refreshes the index of root in the background.
+---@param root string
 function M.build(root)
     local state = state_of(root)
     if state.job then
@@ -380,6 +420,8 @@ local function lexical(root, idx, query, opts, cb)
     )
 end
 
+---@param path string|integer file path or buffer
+---@return string?
 function M.root(path)
     return vim.fs.root(path, M.config.root_markers)
 end
@@ -457,6 +499,12 @@ end
 -- opts.paths: gitignore-style globs limiting both halves ("*.lua", "lua/**", "!tests/**");
 -- opts.lexical = false skips ripgrep.
 -- Returns a handle with :kill() for the ripgrep half.
+---@param root string|string[]
+---@param query string
+---@param n integer
+---@param cb fun(hits: m2v.Hit[])
+---@param opts? m2v.SearchOpts
+---@return m2v.Job?
 function M.search(root, query, n, cb, opts)
     opts = opts or {}
     if type(root) == "string" then
@@ -490,6 +538,11 @@ function M.search(root, query, n, cb, opts)
 end
 
 -- 1-based inclusive lines of the indexed chunk holding the 1-based row of path, if any
+---@param root string
+---@param path string
+---@param row integer
+---@return integer? start
+---@return integer? end
 function M.chunk_at(root, path, row)
     local idx = state_of(root).idx
     local rel = idx and vim.fs.relpath(root, path)
@@ -508,10 +561,17 @@ end
 -- Chunks most similar to text, semantic ranking only. root and opts.paths as for search;
 -- opts.skip = { path, start, end } drops hits overlapping that range (the text's own chunk).
 -- cb gets hits like search, with score = similarity.
+---@param root string|string[]
+---@param text string
+---@param n integer
+---@param cb fun(hits: m2v.Hit[])
+---@param opts? m2v.SimilarOpts
 function M.similar(root, text, n, cb, opts)
     opts = opts or {}
     local out, skip = {}, opts.skip
-    for _, r in ipairs(type(root) == "string" and { root } or root) do
+    for _, r in
+        ipairs(type(root) == "string" and { root } or root --[[@as string[] ]])
+    do
         local state = state_of(r)
         if not state.checked then
             state.checked = true
