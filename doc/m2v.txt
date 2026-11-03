@@ -1,0 +1,228 @@
+*m2v.txt*  Semantic code search with model2vec static embeddings
+
+==============================================================================
+CONTENTS                                                        *m2v-contents*
+
+  1. Introduction ............................................ |m2v-intro|
+  2. Requirements ..................................... |m2v-requirements|
+  3. Usage ................................................... |m2v-usage|
+  4. Commands ............................................. |m2v-commands|
+  5. Mappings ............................................. |m2v-mappings|
+  6. Scope tokens ..................................... |m2v-scope-tokens|
+  7. Configuration ................................... |m2v-configuration|
+  8. Lua API .................................................. |m2v-api|
+  9. Models ................................................ |m2v-models|
+
+==============================================================================
+1. INTRODUCTION                                                    *m2v-intro*
+
+m2v.nvim embeds code with model2vec static embeddings inside Neovim, through
+LuaJIT FFI, treesitter and the utf8proc bundled with nvim. Queries are matched
+by meaning and fused with `rg` lexical matches (reciprocal rank fusion).
+
+Code is chunked by treesitter: top-level nodes, split when too big, small
+neighbours merged. Markdown and vim help are split at headings, each chunk
+embedded with its heading path. Line windows are the fallback.
+
+Only directories with a root marker (`.git` by default) are indexed. Indexes
+live in `stdpath("cache")/m2v/index/`, are built in the background by
+`nvim -l` worker processes on the first search, and refreshed after writes.
+
+==============================================================================
+2. REQUIREMENTS                                             *m2v-requirements*
+
+- Neovim 0.11 or later, built with LuaJIT
+- `rg` for file listing and lexical ranking (`git ls-files` is the fallback)
+- `curl` for the one-time model download
+- snacks.nvim for the pickers (optional: without it results go to the
+  quickfix list)
+
+Run |:checkhealth| m2v to check them.
+
+==============================================================================
+3. USAGE                                                           *m2v-usage*
+
+No setup call is needed: the plugin defines |:M2v| and the |m2v-mappings| at
+startup and loads its modules on first use. For example: >lua
+
+    vim.keymap.set("n", "<leader>fS", "<Plug>(m2v-search)")
+    vim.keymap.set("n", "<leader>fL", "<Plug>(m2v-live)")
+    vim.keymap.set({ "n", "x" }, "<leader>fs", "<Plug>(m2v-similar)")
+<
+The live picker starts searching once the query has
+`picker.min_live_words` words (3 by default).
+
+Find similar ~
+                                                             *m2v-similar*
+Embeds the visual selection, the given range, or the indexed chunk under the
+cursor, and lists the closest chunks by cosine (semantic ranking only, no
+`rg`). The source chunk itself is left out. It surfaces copy-pasted and
+parallel code across modules.
+
+Pickers show each semantic hit's cosine to the query next to the file name.
+Cosines are not calibrated across queries or corpora; see
+`min_similarity` in |m2v-configuration|.
+
+==============================================================================
+4. COMMANDS                                                     *m2v-commands*
+
+                                                                        *:M2v*
+:M2v search [{query}]   Search the current project. Prompts for the query
+                        when none is given. {query} may hold
+                        |m2v-scope-tokens|.
+
+:M2v live               Live picker; with snacks.nvim missing, same as
+                        `:M2v search`.
+
+:[range]M2v similar     Chunks similar to [range], or to the chunk under the
+                        cursor without a range. See |m2v-similar|.
+
+:M2v build              Build or refresh the index of the current buffer's
+                        project now.
+
+==============================================================================
+5. MAPPINGS                                                     *m2v-mappings*
+
+                                                          *<Plug>(m2v-search)*
+<Plug>(m2v-search)      Normal mode: prompt for a query and search.
+
+                                                            *<Plug>(m2v-live)*
+<Plug>(m2v-live)        Normal mode: live picker.
+
+                                                         *<Plug>(m2v-similar)*
+<Plug>(m2v-similar)     Normal and visual mode: find similar code.
+
+No mappings are set by default.
+
+==============================================================================
+6. SCOPE TOKENS                                             *m2v-scope-tokens*
+
+Picker queries accept these tokens. They do not count as words.
+
+  `path:GLOB`     only files matching GLOB (repeatable)
+  `-path:GLOB`    skip files matching GLOB
+  `-lex`          semantic ranking only, no `rg` half
+
+Globs follow `rg -g` / gitignore rules: `*.lua` matches the file name at any
+depth, `lua/**` is anchored at the root. Example: >
+    parse diff hunks path:lua/** -path:tests/** -lex
+<
+==============================================================================
+7. CONFIGURATION                                           *m2v-configuration*
+                                                        *g:m2v* *m2v.setup()*
+Set `vim.g.m2v` before the plugin's modules load, or call
+`require("m2v").setup(opts)` at any time. Both take any subset of the
+defaults below and are validated. Defaults: >lua
+
+    vim.g.m2v = {
+        model = "minishlab/potion-code-16M-v2",
+        max_tokens = 512,
+        max_file_bytes = 256 * 1024,
+        chunk = { max_lines = 60, target_lines = 30 },
+        root_markers = { ".git" },
+        rrf_k = 60,
+        depth = 100,
+        min_similarity = 0,
+        lexical = { max_terms = 16, min_len = 3, max_count = 20 },
+        rebuild_delay_ms = 2000,
+        cache_size = 32,
+        cache_ttl_ms = 60000,
+        workers = math.min(4, #vim.uv.cpu_info()),
+        picker = {
+            n = 30,
+            ui = "auto",
+            roots = {},
+            min_live_words = 3,
+            test_patterns = { ... },
+        },
+    }
+<
+model             Hugging Face model id. See |m2v-models|.
+rrf_k             Reciprocal rank fusion constant.
+depth             Candidates taken from each ranking before fusion.
+min_similarity    Semantic candidates below this cosine to the query are
+                  dropped. On mini.nvim, "banana smoothie recipe" scores
+                  0.22 while relevant hits for real queries score 0.4-0.7;
+                  on a small repo relevant hits can sit below 0.3. Pick it
+                  per corpus, or leave it at 0.
+rebuild_delay_ms  Delay between a write and the index refresh.
+cache_size        Searches remembered per root. Dropped on writes, reindex
+                  and after `cache_ttl_ms`. 0 disables the cache.
+cache_ttl_ms      Bounds staleness from changes made outside the editor.
+workers           Indexer processes for a full index. 1 embeds in a single
+                  process. Each worker loads the model (about 300 MB peak
+                  RSS for potion-code-16M-v2).
+picker.n          Number of results.
+picker.ui         "auto": snacks.nvim when installed. "quickfix": always the
+                  quickfix list.
+picker.roots      Other project roots searched alongside the current one,
+                  e.g. `{ "~/.config/nvim" }`. They need no root marker.
+picker.min_live_words
+                  Words the live picker waits for.
+picker.test_patterns
+                  Lua patterns; matching hits are hidden unless the query
+                  mentions test or spec.
+
+==============================================================================
+8. LUA API                                                           *m2v-api*
+
+                                                                  *m2v.root()*
+require("m2v").root({path})
+    Project root of {path} (file path or buffer), or nil.
+
+                                                                *m2v.search()*
+require("m2v").search({root}, {query}, {n}, {cb}, {opts})
+    Fused search. {root} is one root or a list; hits from several roots are
+    merged by score. {cb} receives a list of hits, best first: >lua
+        { root, path, start, ["end"], score, similarity? }
+<   `start` and `end` are 1-based inclusive lines. `similarity` is the
+    cosine to the query, set on chunks the semantic half ranked.
+    {opts}:
+      paths     gitignore-style globs limiting both halves, e.g.
+                `{ "lua/**", "!tests/**" }`
+      lexical   false skips `rg`
+    Returns a handle; `handle:kill()` cancels the `rg` half.
+
+                                                               *m2v.similar()*
+require("m2v").similar({root}, {text}, {n}, {cb}, {opts})
+    Chunks most similar to {text}, semantic ranking only. {opts.paths} as
+    for |m2v.search()|; {opts.skip} = `{ path, start, ["end"] }` drops hits
+    overlapping that range.
+
+                                                              *m2v.chunk_at()*
+require("m2v").chunk_at({root}, {path}, {row})
+    1-based range of the indexed chunk holding {row}, or nil.
+
+                                                                 *m2v.build()*
+require("m2v").build({root})
+    Builds or refreshes the index of {root} in the background.
+
+                                                                  *m2v.picker*
+require("m2v.picker").search({input}, {opts})
+require("m2v.picker").search_prompt({opts})
+require("m2v.picker").live({opts})
+require("m2v.picker").similar({opts})
+    {opts}:
+      roots     replaces `picker.roots` for this call
+      paths     extra globs, as for |m2v.search()|
+      lexical   false skips `rg`
+      range     `{ first, last }` lines, |m2v.picker| similar() only
+
+==============================================================================
+9. MODELS                                                         *m2v-models*
+
+Models are taken from `~/.cache/huggingface/hub` when present (honouring
+`$HF_HUB_CACHE` and `$HF_HOME`), otherwise downloaded to
+`stdpath("cache")/m2v/models/`. Each model gets its own index.
+
+Supported: WordPiece and Unigram (Metaspace, `split = false`) tokenizers; an
+`embeddings` tensor (F16 or F32), optionally with the `mapping` (I64) and
+`weights` (F64) tensors added by model2vec vocabulary quantization. Tested:
+
+  minishlab/potion-base-2M, -4M, -8M, -32M
+  minishlab/potion-retrieval-32M
+  minishlab/potion-code-16M-v2 (default)
+  minishlab/potion-code-16M
+  minishlab/potion-multilingual-128M
+
+ vim:tw=78:ts=8:ft=help:norl:
