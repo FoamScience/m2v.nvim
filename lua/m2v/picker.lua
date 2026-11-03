@@ -21,6 +21,7 @@ M.config = {
         "%.spec%.[^/]*$",
     },
 }
+M.config = vim.tbl_deep_extend("force", M.config, require("m2v").config.picker or {})
 
 local function is_test(path)
     for _, pat in ipairs(M.config.test_patterns) do
@@ -182,8 +183,9 @@ function M.search_prompt(opts)
     end)
 end
 
--- chunks similar to the visual selection, or to the indexed chunk under the cursor;
--- opts.roots and opts.paths as for search
+-- chunks similar to opts.range ({ first, last } lines), the visual selection, or the indexed chunk
+-- under the cursor; opts.roots and opts.paths as for search
+---@param opts? m2v.PickerOpts|{ range?: integer[] }
 function M.similar(opts)
     local m2v = require("m2v")
     local buf, cwd = vim.api.nvim_get_current_buf(), vim.fn.getcwd()
@@ -193,7 +195,9 @@ function M.similar(opts)
         return
     end
     local s, e
-    if vim.fn.mode():find("^[vV\22]") then
+    if opts and opts.range then
+        s, e = opts.range[1], opts.range[2]
+    elseif vim.fn.mode():find("^[vV\22]") then
         s, e = vim.fn.line("v"), vim.fn.line(".")
         if s > e then
             s, e = e, s
