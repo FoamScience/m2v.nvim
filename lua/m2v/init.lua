@@ -548,29 +548,75 @@ function M.similar(root, text, n, cb, opts)
     end)
 end
 
+local timers = {}
+vim.api.nvim_create_autocmd("BufWritePost", {
+    group = vim.api.nvim_create_augroup("m2v", { clear = true }),
+    callback = function(ev)
+        local root = M.root(ev.buf)
+        if not root or not roots[root] then
+            return
+        end
+        cache_clear(roots[root])
+        timers[root] = timers[root] or vim.uv.new_timer()
+        timers[root]:start(
+            M.config.rebuild_delay_ms,
+            0,
+            vim.schedule_wrap(function()
+                M.build(root)
+            end)
+        )
+    end,
+})
+
+local function validate(opts)
+    for key, kind in pairs({
+        model = "string",
+        max_tokens = "number",
+        max_file_bytes = "number",
+        chunk = "table",
+        root_markers = "table",
+        rrf_k = "number",
+        depth = "number",
+        min_similarity = "number",
+        lexical = "table",
+        rebuild_delay_ms = "number",
+        cache_size = "number",
+        cache_ttl_ms = "number",
+        workers = "number",
+        picker = "table",
+    }) do
+        vim.validate("m2v." .. key, opts[key], kind, true)
+    end
+    for _, section in ipairs({ "chunk", "lexical" }) do
+        for key, value in pairs(opts[section] or {}) do
+            vim.validate(("m2v.%s.%s"):format(section, key), value, "number")
+        end
+    end
+    local picker = opts.picker or {}
+    for key, kind in pairs({ n = "number", roots = "table", min_live_words = "number", test_patterns = "table" }) do
+        vim.validate("m2v.picker." .. key, picker[key], kind, true)
+    end
+    vim.validate("m2v.picker.ui", picker.ui, function(v)
+        return v == nil or v == "auto" or v == "quickfix"
+    end, '"auto" or "quickfix"')
+end
+
+local function configure(opts)
+    validate(opts)
+    M.config = vim.tbl_deep_extend("force", M.config, opts)
+    -- not yet loaded: the picker merges M.config.picker itself on load
+    local picker = package.loaded["m2v.picker"]
+    if type(picker) == "table" then
+        picker.config = vim.tbl_deep_extend("force", picker.config, opts.picker or {})
+    end
+end
+
+configure(vim.g.m2v or {})
+
+--- Merges opts over the defaults and vim.g.m2v. Optional: the plugin works without it.
+---@param opts? table any subset of m2v.Config
 function M.setup(opts)
-    M.config = vim.tbl_deep_extend("force", M.config, opts or {})
-    local picker = require("m2v.picker")
-    picker.config = vim.tbl_deep_extend("force", picker.config, M.config.picker or {})
-    local timers = {}
-    vim.api.nvim_create_autocmd("BufWritePost", {
-        group = vim.api.nvim_create_augroup("m2v", { clear = true }),
-        callback = function(ev)
-            local root = M.root(ev.buf)
-            if not root or not roots[root] then
-                return
-            end
-            cache_clear(roots[root])
-            timers[root] = timers[root] or vim.uv.new_timer()
-            timers[root]:start(
-                M.config.rebuild_delay_ms,
-                0,
-                vim.schedule_wrap(function()
-                    M.build(root)
-                end)
-            )
-        end,
-    })
+    configure(opts or {})
 end
 
 return M
