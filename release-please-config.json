@@ -5,7 +5,8 @@
       "release-type": "simple",
       "package-name": "m2v.nvim",
       "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": false
+      "bump-patch-for-minor-pre-major": false,
+      "initial-version": "0.1.0"
     }
   }
 }
